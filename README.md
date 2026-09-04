@@ -230,9 +230,9 @@ at the `frontend` Service (`/`).
 | 3. Kubernetes manifests | ✅ done |
 | 4. Manual deploy to GKE + HTTPS | ✅ done |
 | 7. Artifact Registry | ✅ done |
-| 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ⏭ next |
-| 9. GitHub Actions: build + push + deploy on merge to `main` | ⏭ next |
-| 10. Helm packaging | later |
+| 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ✅ done |
+| 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
+| 10. Helm packaging | ⏭ next |
 | 11. Monitoring (Prometheus/Grafana) | later |
 | 12. Jenkins (separate learning phase) | later |
 
@@ -243,10 +243,24 @@ cluster changes.
 
 ---
 
-## 10. Phase 8 — Workload Identity Federation (next)
+## 10. Phase 8 — Workload Identity Federation (done)
 
-Goal: let GitHub Actions authenticate to Google Cloud using short-lived OIDC
+Set up so GitHub Actions authenticates to Google Cloud using short-lived OIDC
 tokens instead of a long-lived service-account JSON key.
+
+What exists now:
+
+- Service account `github-deployer@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com`
+  with `roles/artifactregistry.writer` and `roles/container.developer`.
+- Workload Identity pool `github-pool` + OIDC provider `github-provider`
+  (issuer `https://token.actions.githubusercontent.com`, restricted to
+  repository owner `csanyilevente8`).
+- Provider resource name (used by the workflows):
+  `projects/860228474942/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
+- Both repos (`backend-project`, `frontend-project`) bound as
+  `roles/iam.workloadIdentityUser` on the deployer SA.
+
+The `gcloud` commands used to create the above are kept below for reference.
 
 Concept:
 
@@ -333,20 +347,43 @@ Keep that string; it goes into the workflow as `workload_identity_provider`.
 
 ---
 
-## 11. Phase 9 — GitHub Actions build + push + deploy
+## 11. Phase 9 — GitHub Actions build + push + deploy (done)
 
-Each app repo (`backend-project`, `frontend-project`) gets a workflow that, on
-push to `main`:
+Each app repo has a `*-cd.yml` workflow that runs **after** its CI succeeds on
+`main` (via `workflow_run`, so failing tests never deploy). The CD job:
 
-1. checks out and runs tests (already present today);
-2. authenticates to GCP via WIF (no keys);
-3. builds a **linux/amd64** image tagged with the commit SHA;
-4. pushes to Artifact Registry;
-5. updates the GKE Deployment to the new image.
+1. authenticates to GCP via WIF (`google-github-actions/auth@v2`, no keys);
+2. builds a `linux/amd64` image tagged with the commit SHA and pushes it to
+   Artifact Registry;
+3. gets GKE credentials and runs `kubectl set image` + `rollout status`
+   (Option A — direct image update, zero-downtime rolling update).
 
-The workflow needs `permissions: id-token: write` (for OIDC) and
-`contents: read`. Sketch of the deploy job (backend shown; frontend is the same
-with its own image name and `deploy/frontend`):
+Files:
+- `backend-project/.github/workflows/backend-cd.yml`
+- `frontend-project/.github/workflows/frontend-cd.yml`
+
+Verified: pushing a change to `main` builds the new image, pushes it, and
+performs a rolling update (old pod keeps serving until the new pod passes its
+readiness probe). Confirm the live image with:
+
+```bash
+kubectl get deployment backend -n todo \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Known tradeoff (Option A): the live image tag can drift from the SHA written in
+`todo/*-deployment.yaml` here, since CD updates the cluster directly rather than
+this repo. This is removed when Helm (Phase 10) makes the tag a chart value set
+by CI.
+
+Notes:
+- CD does not run on pull requests, only on pushes to `main`.
+- `workflow_run` workflows only trigger once the workflow file is on `main`, so
+  the first push of a CD workflow does not deploy; the next push does.
+- Any push to `main` redeploys that repo's image even for docs-only changes
+  (functionally identical image, new SHA). Add path filters later if desired.
+
+### Reference: the gcloud setup used in Phase 8
 
 ```yaml
 permissions:
@@ -508,12 +545,17 @@ Assume when continuing:
    (`backend`, `frontend`), tagged by commit SHA, built for `linux/amd64`.
 4. cert-manager + `letsencrypt-prod` ClusterIssuer work; the `nginx-demo`
    HTTPS reference remains as a known-good example.
-5. App repos are on `main`; CI runs test+build (no deploy yet).
-6. The node service account has `artifactregistry.reader`.
+5. App repos are on `main`; each has CI (test+build) **and** CD
+   (build/push/deploy via WIF) — a push to `main` that passes CI automatically
+   rolls the corresponding GKE deployment.
+6. The node service account has `artifactregistry.reader`; the
+   `github-deployer` SA + `github-pool`/`github-provider` WIF setup exist.
 7. `todo-ip` global static IP is reserved and DNS points to it via GoDaddy.
 
-Next task: **Phase 8** (Workload Identity Federation), then **Phase 9**
-(GitHub Actions build/push/deploy on merge to `main`). Do manual verification
-before automating; provide commands for the user to run rather than executing
-cluster changes directly.
+Next task: **Phase 10** (package `todo/` as a Helm chart; make image tags,
+host, replicas, and resources chart values; have CD run
+`helm upgrade --install` instead of `kubectl set image`). Then Phase 11
+(monitoring) and Phase 12 (Jenkins). Do manual verification before automating;
+provide commands for the user to run rather than executing cluster changes
+directly.
 
