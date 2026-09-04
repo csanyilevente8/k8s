@@ -246,8 +246,9 @@ at the `frontend` Service (`/`).
 | 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ✅ done |
 | 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
 | 10. Helm packaging | ⏭ next |
-| 11. Monitoring (Prometheus/Grafana) | later |
+| 11. Monitoring (Prometheus/Grafana + application logs) | later |
 | 12. Jenkins (separate learning phase) | later |
+| 13. Terraform (Infrastructure as Code) | later |
 
 The remaining phases are detailed below with concrete steps so the work can be
 resumed in a fresh session. All `gcloud`/`kubectl`/`docker` commands are run by
@@ -505,6 +506,39 @@ into capacity planning — another reason not to shrink the cluster prematurely.
 Spring Boot already exposes `/actuator/health`; enabling
 `/actuator/prometheus` (Micrometer) is the natural first step for app metrics.
 
+### Application logs
+
+Metrics answer "how much / how fast"; logs answer "what happened / why". Options
+for this cluster, from simplest to most involved:
+
+- **`kubectl logs`** — immediate, no setup. Fine for live debugging, but logs
+  vanish when a pod is deleted and there is no search across pods/time.
+  ```bash
+  kubectl logs deploy/backend -n todo -f
+  kubectl logs <pod> -n todo --previous   # logs from a crashed container
+  ```
+- **`stern`** (CLI tool) — tail/aggregate logs from many pods at once with
+  colour coding. Convenience layer over `kubectl logs`; no cluster changes.
+- **Google Cloud Logging (built in on GKE)** — GKE ships container stdout/stderr
+  to Cloud Logging automatically. Query in the console (Logs Explorer) or:
+  ```bash
+  gcloud logging read \
+    'resource.type="k8s_container" resource.labels.namespace_name="todo"' \
+    --limit=50 --project=project-f0ad4dfa-b194-4dc6-963
+  ```
+  This is persistent, searchable, and needs no extra deployment — the easiest
+  real logging solution here.
+- **Self-hosted stack** — Grafana **Loki** + Promtail (log equivalent of
+  Prometheus, integrates with the Grafana used for metrics) or the classic
+  **EFK** (Elasticsearch + Fluent Bit + Kibana). More to run and to fund in
+  cluster capacity, but fully in your control and a good learning exercise.
+
+Recommended learning path for logs: (1) get comfortable with `kubectl logs` and
+Cloud Logging first (free, already working); (2) then, alongside Phase 11's
+Grafana, add **Loki + Promtail** so metrics and logs live in one Grafana. To get
+the most from logs, switch Spring Boot to **structured (JSON) logging** so fields
+are queryable, and include a correlation/request id per request.
+
 ---
 
 ## 14. Phase 12 — Jenkins (later, separate)
@@ -512,6 +546,64 @@ Spring Boot already exposes `/actuator/health`; enabling
 Introduce Jenkins only after GitHub Actions CD is working, purely as a learning
 exercise (Jenkinsfile, agents, credentials, Kubernetes integration). Do not run
 two CD systems against this environment simultaneously.
+
+---
+
+## 14b. Phase 13 — Terraform (Infrastructure as Code, later)
+
+Goal: manage the GCP/GKE infrastructure declaratively with Terraform instead of
+the ad-hoc `gcloud` commands used so far, so the environment is reproducible and
+reviewable.
+
+Bring these existing, manually-created resources under Terraform:
+
+- GKE cluster `kubecourse` and its node pools
+- Artifact Registry repository `kubecourse` (+ its cleanup policy)
+- Global static IP `todo-ip`
+- IAM: the `github-deployer` service account and its role bindings
+- Workload Identity Federation pool/provider (`github-pool` / `github-provider`)
+  and the repo `workloadIdentityUser` bindings
+- (optionally) the node service account's `artifactregistry.reader` binding
+
+Suggested approach:
+
+- Keep Terraform for **cloud infrastructure** (GCP resources). Keep **in-cluster
+  app resources** in Kubernetes manifests / Helm (Phase 10) — do not try to
+  manage every Deployment through Terraform. A common split:
+  `terraform/` = GCP; `todo/` or Helm chart = Kubernetes workloads.
+- Providers: `google` (and `google-beta` where needed).
+- **State**: use a remote backend (a GCS bucket) so state is shared and locked,
+  not a local file. Create the bucket first (chicken-and-egg: bootstrap it by
+  hand or with a tiny local-state config, then migrate).
+- **Import, don't recreate**: the cluster, registry, IP, and IAM already exist
+  and are in use. Use `terraform import` (or `import` blocks) to bring them into
+  state, then `terraform plan` until it shows **no changes** — that proves the
+  HCL matches reality before Terraform is allowed to modify anything. Applying
+  from scratch would try to recreate live resources.
+- Structure: consider modules (`network`, `gke`, `artifact-registry`, `iam-wif`)
+  and a `terraform/README.md` documenting `init/plan/apply` and the state bucket.
+- CI later: a `terraform plan` on pull requests and `terraform apply` on merge,
+  authenticated via the same Workload Identity Federation pattern (a separate SA
+  with narrower infra permissions).
+
+Suggested layout:
+
+```
+terraform/
+├── backend.tf         # remote state (GCS bucket)
+├── providers.tf       # google provider, project/region
+├── artifact_registry.tf
+├── gke.tf
+├── network.tf         # static IP, etc.
+├── iam_wif.tf         # deployer SA + Workload Identity Federation
+├── variables.tf
+└── README.md
+```
+
+Caution: Terraform manages **real, hard-to-reverse infrastructure**. Always
+review `terraform plan` carefully, never auto-approve destroys, and keep the
+cluster/registry protected (e.g. `prevent_destroy` lifecycle) so a bad plan
+cannot delete the live environment.
 
 ---
 
@@ -572,7 +664,9 @@ Assume when continuing:
 Next task: **Phase 10** (package `todo/` as a Helm chart; make image tags,
 host, replicas, and resources chart values; have CD run
 `helm upgrade --install` instead of `kubectl set image`). Then Phase 11
-(monitoring) and Phase 12 (Jenkins). Do manual verification before automating;
+(monitoring + application logs), Phase 12 (Jenkins), and Phase 13 (Terraform to
+bring the existing GCP/GKE infrastructure under Infrastructure as Code — import
+existing resources, do not recreate). Do manual verification before automating;
 provide commands for the user to run rather than executing cluster changes
 directly.
 
