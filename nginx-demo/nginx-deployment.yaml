@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: my-nginx
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: my-nginx
+
+  template:
+    metadata:
+      labels:
+        app: my-nginx
+
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+
+          ports:
+            - containerPort: 80
+            - containerPort: 443
+
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+
+        - name: tls
+          secret:
+            secretName: my-nginx-tls
