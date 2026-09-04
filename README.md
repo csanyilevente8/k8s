@@ -159,6 +159,19 @@ kubectl apply -f todo/frontend-service.yaml
 kubectl apply -f todo/ingress.yaml
 ```
 
+> **Image tag caveat (while CD is active).** The `image:` tags in
+> `backend-deployment.yaml` / `frontend-deployment.yaml` are bootstrap values
+> only. The CD workflows deploy newer images via `kubectl set image`, so the
+> live cluster runs a newer SHA than these files show. **Do not `kubectl apply`
+> the deployment files to change images** — it would roll the workload *back* to
+> the stale tag. These files are still safe to re-apply for non-image changes
+> (replicas, env, probes), but be aware they will reset the image. This drift is
+> removed in Phase 10 (Helm). Check the running image with:
+> ```bash
+> kubectl get deployment backend -n todo \
+>   -o jsonpath='{.spec.template.spec.containers[0].image}'
+> ```
+
 Verify:
 
 ```bash

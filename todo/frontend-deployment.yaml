@@ -1,3 +1,14 @@
+# NOTE: The `image:` tag below is NOT the source of truth while CD is active.
+# The GitHub Actions CD workflow deploys new images with `kubectl set image`,
+# so the live cluster runs whatever the latest successful pipeline pushed —
+# which is usually a newer commit SHA than the one written here.
+#
+# DO NOT run `kubectl apply -f` on this file to change the image: it would roll
+# the deployment BACK to the (stale) tag below. Check the running image with:
+#   kubectl get deployment frontend -n todo \
+#     -o jsonpath='{.spec.template.spec.containers[0].image}'
+#
+# This drift is removed in Phase 10 (Helm), where the tag becomes a chart value.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +26,7 @@ spec:
     spec:
       containers:
         - name: frontend
+          # Tag is a bootstrap/initial value only — CD overrides it (see header note).
           image: europe-central2-docker.pkg.dev/project-f0ad4dfa-b194-4dc6-963/kubecourse/frontend:743e2a3
           ports:
             - containerPort: 80
