@@ -225,23 +225,295 @@ at the `frontend` Service (`/`).
 
 | Phase | Status |
 |-------|--------|
-| 1. Repos + apps | ✅ |
-| 2. Containerization (Dockerfiles, local run) | ✅ |
-| 3. Kubernetes manifests | ✅ |
-| 4. Manual deploy to GKE + HTTPS | ✅ |
-| 7. Artifact Registry | ✅ |
+| 1. Repos + apps | ✅ done |
+| 2. Containerization (Dockerfiles, local run) | ✅ done |
+| 3. Kubernetes manifests | ✅ done |
+| 4. Manual deploy to GKE + HTTPS | ✅ done |
+| 7. Artifact Registry | ✅ done |
 | 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ⏭ next |
-| 9. GitHub Actions build + push + deploy on merge to `main` | ⏭ next |
+| 9. GitHub Actions: build + push + deploy on merge to `main` | ⏭ next |
 | 10. Helm packaging | later |
 | 11. Monitoring (Prometheus/Grafana) | later |
 | 12. Jenkins (separate learning phase) | later |
 
+The remaining phases are detailed below with concrete steps so the work can be
+resumed in a fresh session. All `gcloud`/`kubectl`/`docker` commands are run by
+the user; assistants should provide commands and interpret output, not execute
+cluster changes.
+
 ---
 
-## 10. Security notes
+## 10. Phase 8 — Workload Identity Federation (next)
+
+Goal: let GitHub Actions authenticate to Google Cloud using short-lived OIDC
+tokens instead of a long-lived service-account JSON key.
+
+Concept:
+
+```
+GitHub Actions job
+  → OIDC token
+  → Google Workload Identity Federation (pool + provider)
+  → impersonate a GCP service account
+  → Artifact Registry (push) + GKE (deploy)
+```
+
+Values for this project:
+
+- Project: `project-f0ad4dfa-b194-4dc6-963`
+- Project number: `860228474942`
+- Repos to trust: `csanyilevente8/backend-project`, `csanyilevente8/frontend-project`
+
+### 8.1 Create a deployer service account
+
+```bash
+gcloud iam service-accounts create github-deployer \
+  --display-name="GitHub Actions deployer" \
+  --project=project-f0ad4dfa-b194-4dc6-963
+```
+
+Grant it the minimum roles (push images + deploy to GKE):
+
+```bash
+SA=github-deployer@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com
+
+# push to Artifact Registry
+gcloud projects add-iam-policy-binding project-f0ad4dfa-b194-4dc6-963 \
+  --member="serviceAccount:$SA" --role="roles/artifactregistry.writer"
+
+# deploy to GKE (get credentials + update workloads)
+gcloud projects add-iam-policy-binding project-f0ad4dfa-b194-4dc6-963 \
+  --member="serviceAccount:$SA" --role="roles/container.developer"
+```
+
+### 8.2 Create the Workload Identity pool + provider
+
+```bash
+gcloud iam workload-identity-pools create github-pool \
+  --location=global \
+  --display-name="GitHub Actions pool" \
+  --project=project-f0ad4dfa-b194-4dc6-963
+
+gcloud iam workload-identity-pools providers create-oidc github-provider \
+  --location=global \
+  --workload-identity-pool=github-pool \
+  --display-name="GitHub OIDC" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository_owner=='csanyilevente8'" \
+  --project=project-f0ad4dfa-b194-4dc6-963
+```
+
+### 8.3 Allow each repo to impersonate the service account
+
+```bash
+PNUM=860228474942
+POOL="projects/$PNUM/locations/global/workloadIdentityPools/github-pool"
+
+for REPO in backend-project frontend-project; do
+  gcloud iam service-accounts add-iam-policy-binding \
+    github-deployer@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="principalSet://iam.googleapis.com/$POOL/attribute.repository/csanyilevente8/$REPO" \
+    --project=project-f0ad4dfa-b194-4dc6-963
+done
+```
+
+### 8.4 Record the provider resource name (needed by the workflows)
+
+```bash
+gcloud iam workload-identity-pools providers describe github-provider \
+  --location=global --workload-identity-pool=github-pool \
+  --project=project-f0ad4dfa-b194-4dc6-963 \
+  --format="value(name)"
+# projects/860228474942/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+```
+
+Keep that string; it goes into the workflow as `workload_identity_provider`.
+
+---
+
+## 11. Phase 9 — GitHub Actions build + push + deploy
+
+Each app repo (`backend-project`, `frontend-project`) gets a workflow that, on
+push to `main`:
+
+1. checks out and runs tests (already present today);
+2. authenticates to GCP via WIF (no keys);
+3. builds a **linux/amd64** image tagged with the commit SHA;
+4. pushes to Artifact Registry;
+5. updates the GKE Deployment to the new image.
+
+The workflow needs `permissions: id-token: write` (for OIDC) and
+`contents: read`. Sketch of the deploy job (backend shown; frontend is the same
+with its own image name and `deploy/frontend`):
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT: project-f0ad4dfa-b194-4dc6-963
+  REGION: europe-central2
+  REPO: kubecourse
+  IMAGE: backend
+  CLUSTER: kubecourse
+  ZONE: europe-central2-a
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/860228474942/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deployer@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push (amd64)
+        run: |
+          IMG=${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${IMAGE}:${GITHUB_SHA::7}
+          docker build --platform linux/amd64 -t "$IMG" .
+          docker push "$IMG"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          location: ${{ env.ZONE }}
+
+      - name: Deploy
+        run: |
+          kubectl set image deployment/backend backend="$IMG" -n todo
+          kubectl rollout status deployment/backend -n todo --timeout=180s
+```
+
+Notes / decisions:
+
+- GitHub runners are amd64, so a plain `docker build` produces amd64 — the
+  Apple-Silicon arch problem does not occur in CI. `--platform linux/amd64` is
+  kept as an explicit guard.
+- Manifests currently pin a specific SHA tag. Two options for CD:
+  (a) `kubectl set image` to the new tag (shown above), simplest; or
+  (b) keep manifests in this repo authoritative and update the tag here
+      (GitOps). Start with (a); revisit when Helm/GitOps is introduced.
+- The `kubectl set image` approach means the running image can drift from the
+  tag written in `todo/backend-deployment.yaml`. When adopting Helm (Phase 10),
+  the image tag becomes a chart value set by CI, removing the drift.
+
+Verification after a deploy:
+
+```bash
+kubectl rollout status deployment/backend -n todo
+kubectl get pods -n todo
+kubectl get ingress todo -n todo \
+  -o jsonpath='{.metadata.annotations.ingress\.kubernetes\.io/backends}'
+```
+
+---
+
+## 12. Phase 10 — Helm (later)
+
+After manual manifests + GitHub Actions are understood, convert `todo/` into a
+Helm chart so deployment is parameterized (image tags, replicas, resources,
+host) and driven by CI.
+
+Target chart shape:
+
+```
+charts/todo/
+├── Chart.yaml
+├── values.yaml
+└── templates/
+    ├── namespace.yaml
+    ├── postgres-*.yaml
+    ├── backend-*.yaml
+    ├── frontend-*.yaml
+    └── ingress.yaml
+```
+
+Key values to expose: `image.backend.tag`, `image.frontend.tag`,
+`ingress.host`, resource requests/limits, `replicas`. CI then runs
+`helm upgrade --install todo charts/todo --set image.backend.tag=<sha> ...`.
+
+---
+
+## 13. Phase 11 — Monitoring (later)
+
+Add Prometheus + Grafana (or GKE Managed Prometheus, which is partly present in
+the cluster already). Learning topics: scraping pod/node metrics, Spring Boot
+Actuator/Micrometer metrics, dashboards, alerts. Factor its resource footprint
+into capacity planning — another reason not to shrink the cluster prematurely.
+
+Spring Boot already exposes `/actuator/health`; enabling
+`/actuator/prometheus` (Micrometer) is the natural first step for app metrics.
+
+---
+
+## 14. Phase 12 — Jenkins (later, separate)
+
+Introduce Jenkins only after GitHub Actions CD is working, purely as a learning
+exercise (Jenkinsfile, agents, credentials, Kubernetes integration). Do not run
+two CD systems against this environment simultaneously.
+
+---
+
+## 15. Capacity plan (revisit after real usage)
+
+Measure actual usage now that the app runs:
+
+```bash
+kubectl top nodes
+kubectl top pods -n todo
+```
+
+- The `e2-micro` (`default-pool`) is memory-constrained and holds mostly system
+  DaemonSets. App pods run on `medium-pool`.
+- Likely future target: `medium-pool` with autoscaling `min: 1, max: 2`
+  (`e2-medium`), and possibly remove `default-pool` — but only after confirming
+  all GKE-managed/system workloads fit on the remaining pool.
+- Remove nodes via `gcloud container clusters resize` / node-pool operations,
+  never `kubectl delete node`. Do not manually resize while autoscaling is
+  configured to manage the same pool.
+
+---
+
+## 16. Security notes
 
 - No secrets committed (DB credentials, TLS keys, cloud credentials).
 - `nginx-demo/tls.key` (a private key) is present from early experimentation and
   should be removed from history in a cleanup pass; keep this repo **private**.
-- Future GitHub → GCP auth will use **OIDC + Workload Identity Federation**
-  (short-lived credentials), not long-lived service-account JSON keys.
+- GitHub → GCP auth uses **OIDC + Workload Identity Federation** (short-lived
+  credentials), not long-lived service-account JSON keys (Phase 8).
+
+---
+
+## 17. Resume point (for a new session)
+
+Assume when continuing:
+
+1. Cluster `kubecourse` exists (zone `europe-central2-a`, project
+   `project-f0ad4dfa-b194-4dc6-963`, project number `860228474942`).
+2. The todo app is deployed and live at **https://todo.leventeprojects.xyz**
+   (namespace `todo`; all resources from `todo/` applied; TLS issued).
+3. Images are in Artifact Registry
+   `europe-central2-docker.pkg.dev/project-f0ad4dfa-b194-4dc6-963/kubecourse`
+   (`backend`, `frontend`), tagged by commit SHA, built for `linux/amd64`.
+4. cert-manager + `letsencrypt-prod` ClusterIssuer work; the `nginx-demo`
+   HTTPS reference remains as a known-good example.
+5. App repos are on `main`; CI runs test+build (no deploy yet).
+6. The node service account has `artifactregistry.reader`.
+7. `todo-ip` global static IP is reserved and DNS points to it via GoDaddy.
+
+Next task: **Phase 8** (Workload Identity Federation), then **Phase 9**
+(GitHub Actions build/push/deploy on merge to `main`). Do manual verification
+before automating; provide commands for the user to run rather than executing
+cluster changes directly.
+
