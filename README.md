@@ -140,9 +140,9 @@ Create the database Secret out-of-band (never committed):
 kubectl apply -f todo/namespace.yaml
 kubectl create secret generic postgres-secret \
   --namespace todo \
-  --from-literal=POSTGRES_USER=todo \
-  --from-literal=POSTGRES_PASSWORD=<password> \
-  --from-literal=POSTGRES_DB=todo
+  --from-literal=POSTGRES_USER=<db-user> \
+  --from-literal=POSTGRES_PASSWORD=<db-password> \
+  --from-literal=POSTGRES_DB=<db-name>
 ```
 
 Apply the rest in dependency order:
@@ -538,8 +538,12 @@ kubectl top pods -n todo
 ## 16. Security notes
 
 - No secrets committed (DB credentials, TLS keys, cloud credentials).
-- `nginx-demo/tls.key` (a private key) is present from early experimentation and
-  should be removed from history in a cleanup pass; keep this repo **private**.
+- The real Let's Encrypt certificate/key are never in git — cert-manager stores
+  them in the cluster (`*-tls` Secrets). A self-signed `CN=localhost` test
+  cert/key that had been committed under `nginx-demo/` was removed; it was a
+  throwaway with no production value (the real cert is
+  `CN=nginx.leventeprojects.xyz`, managed in-cluster).
+- Keep this repo **private**.
 - GitHub → GCP auth uses **OIDC + Workload Identity Federation** (short-lived
   credentials), not long-lived service-account JSON keys (Phase 8).
 

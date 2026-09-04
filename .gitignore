@@ -1,1 +1,8 @@
+# macOS
 .DS_Store
+**/.DS_Store
+
+# private keys / certs (never commit)
+*.key
+*.pem
+tls.crt
