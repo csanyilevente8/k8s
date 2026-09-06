@@ -245,8 +245,8 @@ at the `frontend` Service (`/`).
 | 7. Artifact Registry | ✅ done |
 | 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ✅ done |
 | 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
-| 10. Helm packaging | ⏭ next |
-| 11. Monitoring (Prometheus/Grafana + application logs) | later |
+| 10. Helm packaging + Helm-based CD (Option B, OCI) | ✅ done |
+| 11. Monitoring (Prometheus/Grafana + application logs) | ⏭ next |
 | 12. Jenkins (separate learning phase) | later |
 | 13. Terraform (Infrastructure as Code) | later |
 
@@ -470,29 +470,79 @@ kubectl get ingress todo -n todo \
 
 ---
 
-## 12. Phase 10 — Helm (later)
+## 12. Phase 10 — Helm packaging + Helm-based CD (done)
 
-After manual manifests + GitHub Actions are understood, convert `todo/` into a
-Helm chart so deployment is parameterized (image tags, replicas, resources,
-host) and driven by CI.
+The `todo/` manifests were converted into a Helm chart at `charts/todo/`, and
+CD now deploys via Helm from an OCI chart in Artifact Registry (Option B).
 
-Target chart shape:
+Chart layout:
 
 ```
 charts/todo/
-├── Chart.yaml
-├── values.yaml
+├── Chart.yaml          # version = chart version; appVersion = app version
+├── values.yaml         # image tags, replicas, resources, ingress host, etc.
 └── templates/
-    ├── namespace.yaml
-    ├── postgres-*.yaml
-    ├── backend-*.yaml
-    ├── frontend-*.yaml
+    ├── postgres-pvc.yaml / postgres-statefulset.yaml / postgres-service.yaml
+    ├── backend-config.yaml / backend-deployment.yaml / backend-service.yaml
+    ├── frontend-deployment.yaml / frontend-service.yaml
     └── ingress.yaml
 ```
 
-Key values to expose: `image.backend.tag`, `image.frontend.tag`,
-`ingress.host`, resource requests/limits, `replicas`. CI then runs
-`helm upgrade --install todo charts/todo --set image.backend.tag=<sha> ...`.
+Deliberately **not** in the chart: the `todo` Namespace (provided by
+`--namespace`) and the `postgres-secret` Secret (created via kubectl, never in
+git). The chart references the Secret by name but does not create it.
+
+### How deployment works (Option B, floating chart version)
+
+Three pipelines, all authenticating with Workload Identity Federation:
+
+- **Chart pipeline** (`k8s` repo, `chart-cd.yml`) — on changes to
+  `charts/todo/**`: `helm package` + `helm push` the chart to
+  `oci://europe-central2-docker.pkg.dev/.../kubecourse/charts/todo:<version>`,
+  then `helm upgrade` that version with `--reset-then-reuse-values` (rolls out
+  the chart change, keeps the currently-running image tags).
+- **App pipelines** (`backend-project`, `frontend-project`) — on code merge:
+  build+push the image, then
+  `helm upgrade todo oci://.../charts/todo --reset-then-reuse-values --set <svc>.image.tag=<sha>`
+  with **no `--version`** (floats to the latest published chart). Each app
+  overrides only its own image tag; the other service's tag is preserved.
+
+Source of truth for the running image tags is **Helm's release state in the
+cluster** (not `values.yaml`, whose tags are only bootstrap defaults). Inspect
+with `helm get values todo -n todo`.
+
+### Registry auth in CI (gotcha)
+
+Do **not** use `gcloud auth print-access-token | helm registry login` — under
+WIF impersonation it fails with `iam.serviceAccounts.getAccessToken denied`.
+Instead have the auth action mint the token and pipe it in:
+
+```yaml
+- uses: google-github-actions/auth@v2
+  id: auth
+  with:
+    workload_identity_provider: <provider>
+    service_account: <deployer-sa>
+    token_format: access_token
+- run: |
+    echo "${{ steps.auth.outputs.access_token }}" \
+      | helm registry login europe-central2-docker.pkg.dev \
+          --username oauth2accesstoken --password-stdin
+```
+
+### Repo-name note
+
+This repository's local directory is `kubecourse`, but the **GitHub repo is
+`csanyilevente8/k8s`**. Workload Identity Federation bindings use the *GitHub
+repo name*, so the chart pipeline's WIF binding is for `.../attribute.repository/csanyilevente8/k8s`
+(not `kubecourse`). The app repos are bound under their real names
+(`backend-project`, `frontend-project`).
+
+### Chart version workflow
+
+Bump `version:` in `Chart.yaml` when the chart changes. Because the chart
+pipeline is path-filtered to `charts/todo/**`, editing only the workflow file
+does not trigger it — a chart content change (e.g. the version bump) does.
 
 ---
 
@@ -654,19 +704,25 @@ Assume when continuing:
    (`backend`, `frontend`), tagged by commit SHA, built for `linux/amd64`.
 4. cert-manager + `letsencrypt-prod` ClusterIssuer work; the `nginx-demo`
    HTTPS reference remains as a known-good example.
-5. App repos are on `main`; each has CI (test+build) **and** CD
-   (build/push/deploy via WIF) — a push to `main` that passes CI automatically
-   rolls the corresponding GKE deployment.
+5. App repos are on `main`; each has CI (test+build) **and** CD that deploys
+   via **Helm** (build/push image, then `helm upgrade` from the latest OCI
+   chart, overriding only that service's image tag). The chart lives in the
+   `k8s` repo (`charts/todo/`) and is published to Artifact Registry as an OCI
+   chart by its own pipeline. The running image tags are stored in Helm's
+   release state (`helm get values todo -n todo`), not in `values.yaml`.
 6. The node service account has `artifactregistry.reader`; the
-   `github-deployer` SA + `github-pool`/`github-provider` WIF setup exist.
+   `github-deployer` SA + `github-pool`/`github-provider` WIF setup exist, with
+   `workloadIdentityUser` bindings for repos `k8s`, `backend-project`,
+   `frontend-project` (note: the infra repo's GitHub name is `k8s`, local dir
+   is `kubecourse`).
 7. `todo-ip` global static IP is reserved and DNS points to it via GoDaddy.
 
-Next task: **Phase 10** (package `todo/` as a Helm chart; make image tags,
-host, replicas, and resources chart values; have CD run
-`helm upgrade --install` instead of `kubectl set image`). Then Phase 11
-(monitoring + application logs), Phase 12 (Jenkins), and Phase 13 (Terraform to
-bring the existing GCP/GKE infrastructure under Infrastructure as Code — import
-existing resources, do not recreate). Do manual verification before automating;
-provide commands for the user to run rather than executing cluster changes
+Next task: **Phase 11** (monitoring + application logs — Prometheus/Grafana or
+GKE Managed Prometheus for metrics; kubectl logs / Cloud Logging, then
+Loki+Promtail for logs; expose Spring Boot `/actuator/prometheus`). Then
+Phase 12 (Jenkins) and Phase 13 (Terraform to bring the existing GCP/GKE
+infrastructure under Infrastructure as Code — import existing resources, do not
+recreate). Do manual verification before automating; provide commands for the
+user to run rather than executing cluster changes
 directly.
 
