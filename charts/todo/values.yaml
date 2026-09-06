@@ -53,3 +53,5 @@ ingress:
   staticIpName: todo-ip
   clusterIssuer: letsencrypt-prod
   tlsSecretName: todo-leventeprojects-tls
+monitoring:
+  enabled: true
