@@ -546,48 +546,81 @@ does not trigger it — a chart content change (e.g. the version bump) does.
 
 ---
 
-## 13. Phase 11 — Monitoring (later)
+## 13. Phase 11 — Monitoring (⏭ next)
 
-Add Prometheus + Grafana (or GKE Managed Prometheus, which is partly present in
-the cluster already). Learning topics: scraping pod/node metrics, Spring Boot
-Actuator/Micrometer metrics, dashboards, alerts. Factor its resource footprint
-into capacity planning — another reason not to shrink the cluster prematurely.
+### Capacity finding (drives the approach)
 
-Spring Boot already exposes `/actuator/health`; enabling
-`/actuator/prometheus` (Micrometer) is the natural first step for app metrics.
+`kubectl top nodes` shows the cluster is tight, and — importantly — managed
+monitoring is **already running**:
 
-### Application logs
+- `default-pool` e2-micro: memory ~108% (over-committed, system pods only).
+- `medium-pool` nodes: ~47–49% memory used (~1.4Gi free each).
+- The app itself is tiny (backend ~242Mi, frontend ~4Mi, postgres ~40Mi).
+- **Already present:** `gmp-system/collector-*` = **Google Managed Prometheus**;
+  `fluentbit-gke-*` = logs already shipped to **Cloud Logging**;
+  `kube-state-metrics` running.
 
-Metrics answer "how much / how fast"; logs answer "what happened / why". Options
-for this cluster, from simplest to most involved:
+**Decision: do NOT self-host Prometheus/Grafana/Loki.** There isn't comfortable
+headroom, and it would duplicate what GKE already runs. Use the managed stack
+(GMP + Cloud Logging). A self-hosted stack would require adding a node first —
+not worth it here.
 
-- **`kubectl logs`** — immediate, no setup. Fine for live debugging, but logs
-  vanish when a pod is deleted and there is no search across pods/time.
-  ```bash
-  kubectl logs deploy/backend -n todo -f
-  kubectl logs <pod> -n todo --previous   # logs from a crashed container
-  ```
-- **`stern`** (CLI tool) — tail/aggregate logs from many pods at once with
-  colour coding. Convenience layer over `kubectl logs`; no cluster changes.
-- **Google Cloud Logging (built in on GKE)** — GKE ships container stdout/stderr
-  to Cloud Logging automatically. Query in the console (Logs Explorer) or:
-  ```bash
-  gcloud logging read \
-    'resource.type="k8s_container" resource.labels.namespace_name="todo"' \
-    --limit=50 --project=project-f0ad4dfa-b194-4dc6-963
-  ```
-  This is persistent, searchable, and needs no extra deployment — the easiest
-  real logging solution here.
-- **Self-hosted stack** — Grafana **Loki** + Promtail (log equivalent of
-  Prometheus, integrates with the Grafana used for metrics) or the classic
-  **EFK** (Elasticsearch + Fluent Bit + Kibana). More to run and to fund in
-  cluster capacity, but fully in your control and a good learning exercise.
+### A. Metrics (use the existing Managed Prometheus)
 
-Recommended learning path for logs: (1) get comfortable with `kubectl logs` and
-Cloud Logging first (free, already working); (2) then, alongside Phase 11's
-Grafana, add **Loki + Promtail** so metrics and logs live in one Grafana. To get
-the most from logs, switch Spring Boot to **structured (JSON) logging** so fields
-are queryable, and include a correlation/request id per request.
+1. Backend app change: add `micrometer-registry-prometheus` to `pom.xml` and add
+   `prometheus` to `management.endpoints.web.exposure.include` so
+   `/actuator/prometheus` is exposed. Deploy via the normal Helm CD.
+2. Apply a `PodMonitoring` (gmp) custom resource in the `todo` namespace so the
+   existing GMP collectors scrape the backend's `/actuator/prometheus`.
+3. View metrics in **Cloud Monitoring** (Metrics Explorer / dashboards). No
+   Grafana deploy required. (Optional later: a lightweight Grafana, ~128Mi,
+   pointed at the managed backend for custom dashboards.)
+
+Micrometer auto-provides JVM/GC, HTTP request rate+latency, Hikari DB pool, and
+Tomcat metrics with no custom code.
+
+### B. Logs (use the existing Cloud Logging)
+
+Logs are already collected by `fluentbit-gke`. Tasks are about *using* and
+*improving* them, not deploying infrastructure:
+
+1. Query existing logs — Logs Explorer or:
+   ```bash
+   gcloud logging read \
+     'resource.type="k8s_container" resource.labels.namespace_name="todo"' \
+     --limit=50 --project=project-f0ad4dfa-b194-4dc6-963
+   ```
+2. Backend app change: switch Spring Boot to **structured JSON logging** so
+   fields are queryable, and add a **request/correlation id** per HTTP request.
+
+`kubectl logs` remains the quick live-debug tool:
+```bash
+kubectl logs deploy/backend -n todo -f
+kubectl logs <pod> -n todo --previous   # crashed container
+```
+
+### C. Alerts
+
+Define a few **Cloud Monitoring** alerting policies (no extra infra): backend
+pod down / not ready, high JVM memory or restart loops, HTTP 5xx spike, postgres
+not running / PVC near full.
+
+### Suggested order
+
+1. Add Micrometer `/actuator/prometheus` to the backend (small change via CD).
+2. Apply `PodMonitoring` so GMP scrapes it; view in Cloud Monitoring.
+3. Explore Cloud Logging; then add structured JSON logging + correlation id.
+4. A couple of Cloud Monitoring alerts.
+
+Near-zero added cluster load — only two small backend changes plus managed-stack
+configuration.
+
+### Aside: the e2-micro node
+
+`default-pool` (e2-micro) is at ~108% memory doing only system DaemonSets — a
+standing liability. Once its system pods are confirmed to fit on `medium-pool`,
+remove it via `gcloud container clusters resize` (never `kubectl delete node`).
+Separate small task, not part of Phase 11.
 
 ---
 
