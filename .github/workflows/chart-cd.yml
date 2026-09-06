@@ -1,0 +1,77 @@
+name: Chart CD
+
+# Publishes the Helm chart to Artifact Registry (OCI) and deploys that version
+# to GKE whenever the chart changes on main. Image tags currently running are
+# preserved (--reset-then-reuse-values); only the chart itself is rolled out.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'charts/todo/**'
+
+# Required for Workload Identity Federation (keyless auth to Google Cloud).
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT: project-f0ad4dfa-b194-4dc6-963
+  REGION: europe-central2
+  CLUSTER: kubecourse
+  ZONE: europe-central2-a
+  NAMESPACE: todo
+  RELEASE: todo
+  CHART_DIR: charts/todo
+  OCI_REPO: oci://europe-central2-docker.pkg.dev/project-f0ad4dfa-b194-4dc6-963/kubecourse/charts
+  WIF_PROVIDER: projects/860228474942/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  DEPLOYER_SA: github-deployer@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com
+
+jobs:
+  publish-and-deploy:
+    name: Package, push and deploy chart
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Read chart version from Chart.yaml
+        id: chartver
+        run: |
+          VERSION=$(grep '^version:' ${CHART_DIR}/Chart.yaml | awk '{print $2}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Chart version: $VERSION"
+
+      - name: Log Helm in to Artifact Registry (OCI)
+        run: |
+          gcloud auth print-access-token \
+            | helm registry login ${REGION}-docker.pkg.dev \
+                --username oauth2accesstoken --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm package ${CHART_DIR}
+          helm push todo-${{ steps.chartver.outputs.version }}.tgz ${OCI_REPO}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          location: ${{ env.ZONE }}
+
+      - name: Deploy chart version (keep current image tags)
+        run: |
+          helm upgrade ${RELEASE} ${OCI_REPO}/todo \
+            --version ${{ steps.chartver.outputs.version }} \
+            --namespace ${NAMESPACE} \
+            --reset-then-reuse-values \
+            --wait --timeout 180s

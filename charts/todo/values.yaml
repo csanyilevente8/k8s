@@ -1,0 +1,55 @@
+# Container image registry shared by both app images.
+image:
+  registry: europe-central2-docker.pkg.dev/project-f0ad4dfa-b194-4dc6-963/kubecourse
+  pullPolicy: IfNotPresent
+
+backend:
+  image:
+    repository: backend
+    tag: "2609514"          # overridden per-deploy by CD
+  replicas: 1
+  resources:
+    requests:
+      cpu: 150m
+      memory: 448Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+  # ConfigMap values (non-secret DB connection + CORS)
+  config:
+    dbHost: postgres
+    dbPort: "5432"
+    corsAllowedOrigins: https://todo.leventeprojects.xyz
+  # Name of the pre-existing Secret (created via kubectl, not by this chart)
+  dbSecretName: postgres-secret
+
+frontend:
+  image:
+    repository: frontend
+    tag: "a3149ff"          # overridden per-deploy by CD
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+postgres:
+  image: postgres:16-alpine
+  storage: 5Gi
+  secretName: postgres-secret
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+ingress:
+  host: todo.leventeprojects.xyz
+  staticIpName: todo-ip
+  clusterIssuer: letsencrypt-prod
+  tlsSecretName: todo-leventeprojects-tls

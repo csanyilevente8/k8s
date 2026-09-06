@@ -6,3 +6,6 @@
 *.key
 *.pem
 tls.crt
+
+# Helm packaged charts (build artifacts)
+*.tgz
