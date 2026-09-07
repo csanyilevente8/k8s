@@ -5,16 +5,24 @@ image:
 
 backend:
   image:
-    repository: backend
-    tag: "2609514"          # overridden per-deploy by CD
+    # Default backend is the Go implementation (go-backend-project). The Spring
+    # backend image ("backend") remains available for A/B swaps via --set.
+    # NOTE: the Spring backend-project CD still runs on its own pushes; if it
+    # triggers it will set backend.image.tag to a Spring SHA while reusing this
+    # go-backend repository, producing a non-existent image. Avoid pushing to
+    # the Spring repo while Go is the default.
+    repository: go-backend
+    tag: "a0ba0de"          # overridden per-deploy by the go-backend-project CD
   replicas: 1
+  # Right-sized for the Go backend (idle ~1-3Mi). The Spring image needs far
+  # more (~283Mi); if swapping back to Spring, raise these via --set.
   resources:
     requests:
-      cpu: 150m
-      memory: 448Mi
+      cpu: 50m
+      memory: 64Mi
     limits:
-      cpu: "1"
-      memory: 768Mi
+      cpu: 500m
+      memory: 128Mi
   # ConfigMap values (non-secret DB connection + CORS)
   config:
     dbHost: postgres
