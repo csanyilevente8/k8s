@@ -246,8 +246,8 @@ at the `frontend` Service (`/`).
 | 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ✅ done |
 | 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
 | 10. Helm packaging + Helm-based CD (Option B, OCI) | ✅ done |
-| 11. Monitoring (Prometheus/Grafana + application logs) | ⏭ next |
-| 12. Jenkins (separate learning phase) | later |
+| 11. Monitoring — metrics + logs (managed stack); alerts optional | ✅ done (alerts optional) |
+| 12. Jenkins (separate learning phase) | ⏭ next |
 | 13. Terraform (Infrastructure as Code) | later |
 
 The remaining phases are detailed below with concrete steps so the work can be
@@ -546,7 +546,17 @@ does not trigger it — a chart content change (e.g. the version bump) does.
 
 ---
 
-## 13. Phase 11 — Monitoring (⏭ next)
+## 13. Phase 11 — Monitoring (✅ metrics + logs done; alerts optional)
+
+Done: backend exposes `/actuator/prometheus` (Micrometer); a conditional
+`PodMonitoring` (chart 0.2.0) has GKE Managed Prometheus scraping it; metrics
+visible in Cloud Monitoring. Structured JSON logging + an `X-Request-Id`
+correlation id (MDC) ship to Cloud Logging as parsed `jsonPayload` fields.
+Remaining/optional: Cloud Monitoring alert policies (task C below).
+
+Minor follow-up: `spring.jpa.show-sql: true` prints raw Hibernate SQL to stdout
+outside the JSON format; disable it in the deployed profile for fully uniform
+structured logs.
 
 ### Capacity finding (drives the approach)
 
@@ -750,12 +760,13 @@ Assume when continuing:
    is `kubecourse`).
 7. `todo-ip` global static IP is reserved and DNS points to it via GoDaddy.
 
-Next task: **Phase 11** (monitoring + application logs — Prometheus/Grafana or
-GKE Managed Prometheus for metrics; kubectl logs / Cloud Logging, then
-Loki+Promtail for logs; expose Spring Boot `/actuator/prometheus`). Then
-Phase 12 (Jenkins) and Phase 13 (Terraform to bring the existing GCP/GKE
-infrastructure under Infrastructure as Code — import existing resources, do not
-recreate). Do manual verification before automating; provide commands for the
+Next task: **Phase 12** (Jenkins as a separate learning exercise — Jenkinsfile,
+agents, credentials, Kubernetes integration — to compare with GitHub Actions;
+do not point two CD systems at the live environment at once). Then Phase 13
+(Terraform to bring the existing GCP/GKE infrastructure under Infrastructure as
+Code — import existing resources, do not recreate). Phase 11 monitoring is done
+(metrics + logs via GMP + Cloud Logging); Cloud Monitoring alert policies remain
+optional. Do manual verification before automating; provide commands for the
 user to run rather than executing cluster changes
 directly.
 
