@@ -79,11 +79,13 @@ kubecourse/
 |------|-------|
 | Cluster | `kubecourse` (GKE Standard) |
 | Zone | `europe-central2-a` |
-| Node pools | `default-pool` (1× e2-micro), `medium-pool` (2× e2-medium) |
+| Node pool | `medium-pool` (e2-medium, autoscaling min 2 / max 3) |
 | GCP project | `project-f0ad4dfa-b194-4dc6-963` |
 
-The `e2-micro` is memory-constrained; application pods run on `medium-pool`.
-Do **not** shrink capacity until real workload resource usage is measured.
+Single node pool: `medium-pool` (e2-medium) with cluster autoscaling (min 2,
+max 3). The old `default-pool` (1× e2-micro) was removed during env cleanup —
+it was over-committed and held only system DaemonSets. At rest the two nodes sit
+~48–54% memory; a 3rd scales up under load (e.g. future in-cluster workloads).
 
 ---
 
@@ -563,8 +565,8 @@ structured logs.
 `kubectl top nodes` shows the cluster is tight, and — importantly — managed
 monitoring is **already running**:
 
-- `default-pool` e2-micro: memory ~108% (over-committed, system pods only).
-- `medium-pool` nodes: ~47–49% memory used (~1.4Gi free each).
+- `medium-pool` nodes: ~48–54% memory used (~1.4Gi free each). (At the time,
+  a now-removed `default-pool` e2-micro was over-committed at ~108%.)
 - The app itself is tiny (backend ~242Mi, frontend ~4Mi, postgres ~40Mi).
 - **Already present:** `gmp-system/collector-*` = **Google Managed Prometheus**;
   `fluentbit-gke-*` = logs already shipped to **Cloud Logging**;
@@ -625,12 +627,13 @@ not running / PVC near full.
 Near-zero added cluster load — only two small backend changes plus managed-stack
 configuration.
 
-### Aside: the e2-micro node
+### Aside: the e2-micro node (removed)
 
-`default-pool` (e2-micro) is at ~108% memory doing only system DaemonSets — a
-standing liability. Once its system pods are confirmed to fit on `medium-pool`,
-remove it via `gcloud container clusters resize` (never `kubectl delete node`).
-Separate small task, not part of Phase 11.
+The old `default-pool` (e2-micro) was over-committed (~108% memory) doing only
+system DaemonSets. It has since been **removed** during env cleanup, after
+confirming it held no application pods. The cluster now runs a single
+`medium-pool` with autoscaling (min 2, max 3). Node pools are removed via
+`gcloud container node-pools delete` (never `kubectl delete node`).
 
 ---
 
@@ -755,23 +758,36 @@ cannot delete the live environment.
 
 ---
 
-## 15. Capacity plan (revisit after real usage)
+## 15. Capacity plan (current state)
 
-Measure actual usage now that the app runs:
+Env cleanup is done. Current layout:
 
+- Single node pool **`medium-pool`** (e2-medium), **autoscaling min 2 / max 3**.
+- The old `default-pool` (e2-micro) was removed — it held only system DaemonSets
+  and was over-committed.
+- At rest: ~48–54% memory per node; the 3rd node scales up under load.
+
+Check usage any time:
 ```bash
 kubectl top nodes
 kubectl top pods -n todo
 ```
 
-- The `e2-micro` (`default-pool`) is memory-constrained and holds mostly system
-  DaemonSets. App pods run on `medium-pool`.
-- Likely future target: `medium-pool` with autoscaling `min: 1, max: 2`
-  (`e2-medium`), and possibly remove `default-pool` — but only after confirming
-  all GKE-managed/system workloads fit on the remaining pool.
-- Remove nodes via `gcloud container clusters resize` / node-pool operations,
-  never `kubectl delete node`. Do not manually resize while autoscaling is
-  configured to manage the same pool.
+Future tuning:
+- When adding heavier workloads (e.g. in-cluster Jenkins, a second backend),
+  the max=3 gives room; raise max if needed.
+- If the app footprint shrinks, consider dropping to `min: 1` (e.g. when trying
+  a lighter Go backend) so it can scale down to a single node when idle.
+
+Commands used / to use:
+```bash
+# enable/adjust autoscaling on the pool
+gcloud container clusters update kubecourse --zone=europe-central2-a \
+  --enable-autoscaling --node-pool=medium-pool --min-nodes=2 --max-nodes=3
+# remove a node pool (drains properly; never `kubectl delete node`)
+gcloud container node-pools delete <pool> --cluster=kubecourse --zone=europe-central2-a
+```
+Do not manually resize a pool while autoscaling manages it.
 
 ---
 
