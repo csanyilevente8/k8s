@@ -8,6 +8,10 @@ two separate repositories.
 This is a hands-on **learning project**: prefer explicit, understandable
 resources over abstractions, and deploy manually before automating.
 
+> Setting up on a new/different Mac? See **[SETUP-NEW-MACHINE.md](SETUP-NEW-MACHINE.md)**
+> for installing the tooling, authenticating gcloud/kubectl, and the Apple
+> Silicon build caveat.
+
 ---
 
 ## 1. What this project is
