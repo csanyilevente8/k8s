@@ -247,7 +247,7 @@ at the `frontend` Service (`/`).
 | 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
 | 10. Helm packaging + Helm-based CD (Option B, OCI) | ✅ done |
 | 11. Monitoring — metrics + logs + alerts (managed stack) | ✅ done |
-| 12. Jenkins (separate learning phase) | ⏭ next |
+| 12. Jenkins (local, learning exercise) | ⏸ in progress (paused) |
 | 13. Terraform (Infrastructure as Code) | later |
 
 The remaining phases are detailed below with concrete steps so the work can be
@@ -634,11 +634,66 @@ Separate small task, not part of Phase 11.
 
 ---
 
-## 14. Phase 12 — Jenkins (later, separate)
+## 14. Phase 12 — Jenkins (⏸ in progress — paused, resume later)
 
-Introduce Jenkins only after GitHub Actions CD is working, purely as a learning
-exercise (Jenkinsfile, agents, credentials, Kubernetes integration). Do not run
-two CD systems against this environment simultaneously.
+Learning exercise to compare with GitHub Actions. Rule: do NOT run two CD
+systems against the live `todo` namespace at once — Jenkins only builds/pushes
+(no deploy), using its own image tag namespace.
+
+### Decisions made
+
+- **Local Docker Jenkins** (not in-cluster — the cluster is too tight for the
+  Jenkins controller + agents).
+- Pipeline scope: **test → build → push image** to Artifact Registry. **No
+  deploy.**
+- First target: the **backend** repo.
+- GCP auth: a **service-account JSON key** (long-lived) stored as a Jenkins
+  credential. This is a deliberate contrast to the WIF used by GitHub Actions;
+  acceptable for a local learning setup, scoped to `artifactregistry.writer`.
+- Image tag scheme: `backend:jenkins-<BUILD_NUMBER>` so Jenkins images never
+  collide with / get deployed by the GitHub Actions CD.
+
+### Done so far
+
+- Local Jenkins setup lives in `~/eri-proj/jenkins/` (`Dockerfile` +
+  `docker-compose.yml`). The image adds Docker CLI, gcloud, and Maven to
+  `jenkins/jenkins:lts-jdk17`.
+- `docker-compose.yml` mounts the host Docker socket (with `group_add: ["0"]`
+  so the non-root jenkins user can use it) and mounts the backend repo
+  read-only at `/workspace/backend-project`.
+- Verified inside the container: host Docker daemon reachable, repo mounted,
+  gcloud + Maven present.
+- Jenkins first-run wizard completed (suggested plugins, admin user).
+- Jenkins is currently **stopped** (`docker compose down`); the
+  `jenkins_jenkins_home` volume is preserved, so restarting resumes the setup.
+
+### To resume
+
+1. Start Jenkins: `cd ~/eri-proj/jenkins && DOCKER_HOST="unix://$HOME/.docker/run/docker.sock" docker compose up -d`; UI at http://localhost:8080.
+2. **Stage 2 — GCP auth (not yet done):**
+   ```bash
+   gcloud iam service-accounts create jenkins-ci \
+     --display-name="Local Jenkins CI (Artifact Registry push)" \
+     --project=project-f0ad4dfa-b194-4dc6-963
+   gcloud projects add-iam-policy-binding project-f0ad4dfa-b194-4dc6-963 \
+     --member="serviceAccount:jenkins-ci@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com" \
+     --role="roles/artifactregistry.writer"
+   gcloud iam service-accounts keys create ~/jenkins-ci-key.json \
+     --iam-account=jenkins-ci@project-f0ad4dfa-b194-4dc6-963.iam.gserviceaccount.com \
+     --project=project-f0ad4dfa-b194-4dc6-963
+   ```
+   Add `~/jenkins-ci-key.json` to Jenkins as a **Secret file** credential with
+   ID `gcp-sa-key`, then delete the local key file. NEVER commit the key.
+3. **Stage 3 — Jenkinsfile (not yet done):** add a declarative `Jenkinsfile` to
+   the backend repo: Test (`mvn test`; Testcontainers works via the mounted
+   socket) → Build (`docker build --platform linux/amd64 -t <AR>/backend:jenkins-${BUILD_NUMBER}`)
+   → Auth+Push (`gcloud auth activate-service-account --key-file=$GCP_SA_KEY`,
+   `gcloud auth configure-docker europe-central2-docker.pkg.dev`, `docker push`).
+4. **Stage 4 — Jenkins job:** create a Pipeline job pointing at the Jenkinsfile
+   and run it.
+
+Note: the `~/eri-proj/jenkins/` files are local only (workspace root is not a
+git repo); they are not committed anywhere.
 
 ---
 
@@ -760,13 +815,14 @@ Assume when continuing:
    is `kubecourse`).
 7. `todo-ip` global static IP is reserved and DNS points to it via GoDaddy.
 
-Next task: **Phase 12** (Jenkins as a separate learning exercise — Jenkinsfile,
-agents, credentials, Kubernetes integration — to compare with GitHub Actions;
-do not point two CD systems at the live environment at once). Then Phase 13
-(Terraform to bring the existing GCP/GKE infrastructure under Infrastructure as
-Code — import existing resources, do not recreate). Phase 11 monitoring is done
-(metrics + logs via GMP + Cloud Logging); Cloud Monitoring alert policies remain
-optional. Do manual verification before automating; provide commands for the
-user to run rather than executing cluster changes
+Next task: **resume Phase 12 (Jenkins)** — it is paused mid-setup. Local Docker
+Jenkins is built and configured (`~/eri-proj/jenkins/`, currently stopped, home
+volume preserved). Remaining: Stage 2 (create `jenkins-ci` SA + key, add as
+Jenkins credential `gcp-sa-key`), Stage 3 (add `Jenkinsfile` to the backend repo
+— test/build/push with tag `backend:jenkins-<BUILD_NUMBER>`, no deploy), Stage 4
+(create the Pipeline job and run it). See the Phase 12 section for full detail.
+Then Phase 13 (Terraform — import existing GCP/GKE infra, do not recreate). Do
+manual verification before automating; provide commands for the user to run
+rather than executing cluster changes
 directly.
 
