@@ -246,7 +246,7 @@ at the `frontend` Service (`/`).
 | 8. Workload Identity Federation (GitHub → GCP, no long-lived keys) | ✅ done |
 | 9. GitHub Actions: build + push + deploy on merge to `main` | ✅ done |
 | 10. Helm packaging + Helm-based CD (Option B, OCI) | ✅ done |
-| 11. Monitoring — metrics + logs (managed stack); alerts optional | ✅ done (alerts optional) |
+| 11. Monitoring — metrics + logs + alerts (managed stack) | ✅ done |
 | 12. Jenkins (separate learning phase) | ⏭ next |
 | 13. Terraform (Infrastructure as Code) | later |
 
@@ -546,13 +546,13 @@ does not trigger it — a chart content change (e.g. the version bump) does.
 
 ---
 
-## 13. Phase 11 — Monitoring (✅ metrics + logs done; alerts optional)
+## 13. Phase 11 — Monitoring (✅ done)
 
 Done: backend exposes `/actuator/prometheus` (Micrometer); a conditional
 `PodMonitoring` (chart 0.2.0) has GKE Managed Prometheus scraping it; metrics
 visible in Cloud Monitoring. Structured JSON logging + an `X-Request-Id`
 correlation id (MDC) ship to Cloud Logging as parsed `jsonPayload` fields.
-Remaining/optional: Cloud Monitoring alert policies (task C below).
+Cloud Monitoring alert policies configured.
 
 Minor follow-up: `spring.jpa.show-sql: true` prints raw Hibernate SQL to stdout
 outside the JSON format; disable it in the deployed profile for fully uniform
