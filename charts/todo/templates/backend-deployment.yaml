@@ -49,6 +49,16 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.backend.dbSecretName }}
                   key: POSTGRES_DB
+            {{- if .Values.kafka.enabled }}
+            # Kafka event publishing + consumer. Both backends read KAFKA_BROKERS;
+            # the Spring backend additionally needs APP_KAFKA_ENABLED=true to
+            # start its consumer (the Go backend ignores it). Injected only when
+            # kafka.enabled so the app runs without Kafka otherwise.
+            - name: KAFKA_BROKERS
+              value: "kafka-0.kafka.{{ .Release.Namespace }}.svc.cluster.local:9092"
+            - name: APP_KAFKA_ENABLED
+              value: "true"
+            {{- end }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:
