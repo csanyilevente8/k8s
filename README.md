@@ -255,7 +255,7 @@ at the `frontend` Service (`/`).
 | 11. Monitoring — metrics + logs + alerts (managed stack) | ✅ done |
 | 12. Jenkins (local, learning exercise) | ⏸ in progress (paused) |
 | 13. Terraform (Infrastructure as Code) | later |
-| 15. Event-driven with Kafka (KRaft) — 4 use cases | later |
+| 14. Event-driven with Kafka (KRaft) — 4 use cases | later |
 
 The remaining phases are detailed below with concrete steps so the work can be
 resumed in a fresh session. All `gcloud`/`kubectl`/`docker` commands are run by
@@ -763,7 +763,7 @@ cannot delete the live environment.
 
 ---
 
-## 14c. Phase 15 — Event-driven with Kafka (KRaft), later
+## 14c. Phase 14 — Event-driven with Kafka (KRaft), later
 
 Goal: learn Kafka by adding **event-driven** features to the Todo app, purely
 **additively** — the synchronous CRUD write path (frontend → backend →
