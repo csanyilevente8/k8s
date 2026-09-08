@@ -864,6 +864,14 @@ on the same topic to demonstrate independent fan-out + offset replay.
 
 #### Use case 2 — Notifications / fan-out
 
+> **Decision (2026-09-08): UC2 = Option A (in-process consumer).** Add the
+> `notifier` consumer group **inside the existing backend process** (like the
+> activity consumer), plus a `notifications` table. Goal: demonstrate *fan-out*
+> — one event lands in BOTH `activity_log` and `notifications` from two
+> independent consumer groups. Minimal new infra (no new Deployment/image).
+> Implement on feature branches in both backends + frontend, same workflow as
+> UC1. **Resume here for the next build.**
+
 Shows Kafka's real strength: multiple **independent** consumer groups reading
 the **same** events without interfering.
 
@@ -879,6 +887,20 @@ the **same** events without interfering.
   its committed offset (durability/replay).
 
 #### Use case 3 — Metrics / stream aggregation
+
+> **Decision (2026-09-08): UC3 = Option B (standalone service).** Build the
+> `stats-aggregator` as its **own Deployment** — separate image, CI/CD, and a
+> Helm template gated by `stats.enabled` — NOT in-process. This is where the
+> operational microservice lessons live:
+> - **Standalone service:** independent deploy/restart/failure isolation.
+> - **Partitions:** the multi-pod load-balancing demo (scale to N pods, Kafka
+>   splits partitions across them) needs `todo-events` to have **>1 partition**.
+>   The current single-broker topic is likely 1 partition — recreate it with
+>   e.g. 3 partitions as part of this UC (a partitioning sub-lesson).
+> - **Idempotency:** keyed upserts into `todo_stats` so replays/duplicates
+>   don't double-count.
+> - **Replay:** `kubectl scale deploy/stats-aggregator --replicas=0`, create
+>   todos, scale back up → it resumes from its committed offset and catches up.
 
 A streaming-aggregation mindset: derive a materialized view from the event
 stream.
