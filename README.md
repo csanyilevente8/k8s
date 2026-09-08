@@ -255,7 +255,7 @@ at the `frontend` Service (`/`).
 | 11. Monitoring — metrics + logs + alerts (managed stack) | ✅ done |
 | 12. Jenkins (local, learning exercise) | ⏸ in progress (paused) |
 | 13. Terraform (Infrastructure as Code) | later |
-| 14. Event-driven with Kafka (KRaft) — 4 use cases | later |
+| 14. Event-driven with Kafka (KRaft) — 4 use cases | 🔄 in progress (UC1 ✅) |
 
 The remaining phases are detailed below with concrete steps so the work can be
 resumed in a fresh session. All `gcloud`/`kubectl`/`docker` commands are run by
@@ -818,7 +818,7 @@ Event shape (example): `{ "type": "TodoCreated", "id": "...", "title": "...",
 
 ### The four use cases (detailed)
 
-#### Use case 1 — Activity log (start here)
+#### Use case 1 — Activity log (start here) — ✅ DONE (deployed & verified 2026-09-08)
 
 The foundational case; exercises produce → topic → consume → consumer group.
 
@@ -834,6 +834,33 @@ The foundational case; exercises produce → topic → consume → consumer grou
   serialization. Zero risk to CRUD.
 - **Verify:** create/complete/delete a todo → rows appear in `activity_log` and
   in the Activity view.
+
+**As-built (differs from the plan above):**
+- The consumer runs **in-process inside each backend**, not as a separate
+  Deployment/image. Gated by env (`KAFKA_BROKERS` for Go; `KAFKA_BROKERS` +
+  `APP_KAFKA_ENABLED=true` for Spring). Fire-and-forget producer; the sync CRUD
+  path is unchanged. (A standalone consumer microservice is a future refinement.)
+- Implemented in **both** backends with an identical JSON event contract on
+  topic `todo-events`:
+  `{ type: TodoCreated|TodoUpdated|TodoCompleted|TodoDeleted, todoId, title,
+  completed, timestamp(RFC3339) }`, keyed by `todoId`.
+- `GET /api/activity?limit=N` → newest-first list; default 100, cap 500.
+- **Helm:** Kafka is a single-node KRaft StatefulSet (`kafka.enabled`, chart
+  ≥0.4.0). When enabled, chart 0.5.0+ injects `KAFKA_BROKERS`
+  (`kafka-0.kafka.<ns>.svc.cluster.local:9092`) + `APP_KAFKA_ENABLED=true` into
+  the backend. Chart 0.5.1 pins default image tags to the deployed SHAs.
+- **Live SHAs (2026-09-08):** backend `go-backend:676bc17`, frontend `d81391d`,
+  chart `todo-0.5.1`.
+- **Gotcha fixed:** the Go consumer (`segmentio/kafka-go`) defaulted a new group
+  to the *end* of the topic, so `/api/activity` stayed empty. Fixed with
+  `StartOffset: kafka.FirstOffset` (commit `676bc17`). Verified end-to-end:
+  events land in `activity_log`, consumer group lag 0, Activity view populates.
+- **Ops caveat:** the Artifact Registry keep-2 cleanup policy pruned a tag a
+  Deployment still referenced (`be5b10f`), causing an ImagePullBackOff on
+  redeploy. Consider keeping more image versions.
+
+**Next: Use case 2 (notifications / fan-out)** — add a `notifier` consumer group
+on the same topic to demonstrate independent fan-out + offset replay.
 
 #### Use case 2 — Notifications / fan-out
 
