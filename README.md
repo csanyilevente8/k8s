@@ -859,8 +859,9 @@ The foundational case; exercises produce → topic → consume → consumer grou
   Deployment still referenced (`be5b10f`), causing an ImagePullBackOff on
   redeploy. Consider keeping more image versions.
 
-**Next: Use case 2 (notifications / fan-out)** — add a `notifier` consumer group
-on the same topic to demonstrate independent fan-out + offset replay.
+**Use case 2 (notifications / fan-out): ✅ DONE (built & verified 2026-09-08).**
+Added a `notifier` consumer group on the same topic — independent fan-out +
+offset replay. See the UC2 "As-built" note below.
 
 #### Use case 2 — Notifications / fan-out
 
@@ -885,6 +886,38 @@ the **same** events without interfering.
   the producer.
 - **Key demo:** stop the notifier, create todos, restart it — it catches up from
   its committed offset (durability/replay).
+
+**As-built (2026-09-08):**
+- Implemented as **Option A (in-process)** in **both** backends, mirroring UC1.
+  A second consumer group `notifier` reads the same `todo-events` topic
+  independently of `activity-logger` — one event now lands in **both**
+  `activity_log` and `notifications` (fan-out). No new Deployment/image, no new
+  topic, and no partition change (those stay for UC3). Gated by the same env as
+  UC1 (`KAFKA_BROKERS` for Go; `KAFKA_BROKERS` + `APP_KAFKA_ENABLED=true` for
+  Spring), so the chart needs **no change**.
+- New `notifications` table (`id, todo_id, type, message, read, created_at`),
+  created by each backend's own migrations on startup (Go golang-migrate
+  `000003_create_notifications`, Spring Flyway `V3__create_notifications.sql`) —
+  same shared-schema pattern as `activity_log`.
+- The notifier notifies on `TodoCreated`/`TodoCompleted`/`TodoDeleted` (skips
+  plain `TodoUpdated`) so messages read as user-meaningful; the activity log
+  still records every event type.
+- **API (both backends, identical):** `GET /api/notifications?limit=N`
+  (newest-first, default 100, cap 500), `GET /api/notifications/unread-count`
+  (`{ "count": N }` for the badge), `POST /api/notifications/read` (mark all
+  read).
+- **Frontend:** a read-only **Notifications** view (`/notifications`) plus a 🔔
+  bell + unread-count badge in the todo-list header that polls
+  `unread-count` every 10s; opening the view marks all read. Existing views
+  unchanged.
+- **Verified locally:** Go `go build/vet/test`, Spring `mvn test` (21 incl. the
+  Testcontainers integration test running V3), frontend `ng build` + 28 vitest
+  tests. Not yet deployed to the cluster.
+
+**Next: Use case 3 (metrics / stream aggregation)** — standalone
+`stats-aggregator` Deployment (own image + CI/CD, `stats.enabled`), recreate
+`todo-events` with >1 partition for the multi-pod load-balancing demo, idempotent
+keyed upserts into `todo_stats`.
 
 #### Use case 3 — Metrics / stream aggregation
 
