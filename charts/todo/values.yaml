@@ -61,5 +61,19 @@ ingress:
   staticIpName: todo-ip
   clusterIssuer: letsencrypt-prod
   tlsSecretName: todo-leventeprojects-tls
+
 monitoring:
   enabled: true
+
+kafka:
+  enabled: false
+  image: apache/kafka:3.8.0
+  storage: 1Gi
+  heapOpts: "-Xmx512m -Xms512m"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi

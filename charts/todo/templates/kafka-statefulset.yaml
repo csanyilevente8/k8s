@@ -1,0 +1,90 @@
+{{- if .Values.kafka.enabled }}
+# Single-broker Apache Kafka in KRaft mode (no ZooKeeper). One StatefulSet pod
+# plays BOTH the broker (client data) and controller (metadata quorum) roles.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+spec:
+  serviceName: kafka        # must match the headless Service -> pod DNS kafka-0.kafka.<ns>...
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: kafka
+          image: {{ .Values.kafka.image }}
+          ports:
+            - containerPort: 9092
+              name: broker      # client traffic (produce/consume)
+            - containerPort: 9093
+              name: controller  # internal KRaft metadata quorum
+          env:
+            # --- Node identity + roles (KRaft) ---
+            - name: KAFKA_NODE_ID                 # unique id of this node
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES           # this node is broker AND controller
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS # quorum members id@host:port; single node -> itself
+              value: "1@localhost:9093"
+            # --- Listeners ---
+            - name: KAFKA_LISTENERS               # what the broker binds to (all interfaces)
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            # The address CLIENTS are told to connect to: the stable pod DNS, so
+            # in-cluster producers/consumers can reach the broker. (.Release.Namespace
+            # is a Helm built-in -> the deploy namespace.)
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka-0.kafka.{{ .Release.Namespace }}.svc.cluster.local:9092"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES        # which listener is the controller one
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP   # all plaintext (no TLS/auth) for learning
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME       # listener brokers use to talk to each other
+              value: "PLAINTEXT"
+            # --- Single-node replication: internal topics default to RF 3, which
+            #     is impossible with one broker; must be 1 or Kafka won't start. ---
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS # 0 = consumers join faster (dev)
+              value: "0"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE        # create topics on first use (dev convenience)
+              value: "true"
+            # --- Storage + cluster identity ---
+            - name: KAFKA_LOG_DIRS                # data lives on the mounted PVC
+              value: "/var/lib/kafka/data/logs"
+            - name: CLUSTER_ID                    # fixed base64 UUID; image auto-formats KRaft storage with it
+              value: "kJ8xQf2rSxituSs0Q1oABw"
+            - name: KAFKA_HEAP_OPTS               # cap JVM heap to bound memory on a tight cluster
+              value: "{{ .Values.kafka.heapOpts }}"
+          volumeMounts:
+            - name: kafka-storage
+              mountPath: /var/lib/kafka/data
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+          # Kafka is not HTTP; probe that the broker port is accepting connections.
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 40
+            periodSeconds: 15
+      volumes:
+        - name: kafka-storage
+          persistentVolumeClaim:
+            claimName: kafka-pvc      # the PVC from kafka-pvc.yaml
+{{- end }}
