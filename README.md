@@ -255,6 +255,7 @@ at the `frontend` Service (`/`).
 | 11. Monitoring — metrics + logs + alerts (managed stack) | ✅ done |
 | 12. Jenkins (local, learning exercise) | ⏸ in progress (paused) |
 | 13. Terraform (Infrastructure as Code) | later |
+| 15. Event-driven with Kafka (KRaft) — 4 use cases | later |
 
 The remaining phases are detailed below with concrete steps so the work can be
 resumed in a fresh session. All `gcloud`/`kubectl`/`docker` commands are run by
@@ -761,6 +762,165 @@ cluster/registry protected (e.g. `prevent_destroy` lifecycle) so a bad plan
 cannot delete the live environment.
 
 ---
+
+## 14c. Phase 15 — Event-driven with Kafka (KRaft), later
+
+Goal: learn Kafka by adding **event-driven** features to the Todo app, purely
+**additively** — the synchronous CRUD write path (frontend → backend →
+Postgres) stays unchanged. Kafka sits alongside it: the backend publishes
+events as a fire-and-forget side effect after a successful DB write, and
+independent consumers react. If Kafka or a consumer is down, todos still save;
+only the async features pause.
+
+```
+POST /api/todos ─> write Postgres ─> return 201        (unchanged, synchronous)
+                        │
+                        └─> publish event to Kafka      (fire-and-forget)
+                                     │
+                                     ▼
+                        consumer group(s) react asynchronously
+```
+
+### Broker: Kafka in KRaft mode
+
+Use **Apache Kafka in KRaft mode** (no ZooKeeper — Kafka manages its own
+metadata quorum). Single broker for learning, deployed in-cluster as a
+StatefulSet + PVC (same pattern as Postgres). KRaft means one component instead
+of two, lighter and simpler.
+
+- Namespace: reuse `todo` (or a dedicated `kafka` namespace).
+- StatefulSet `kafka` (KRaft combined controller+broker role), headless Service
+  for stable DNS, PVC for the log directory.
+- Config essentials: `KAFKA_PROCESS_ROLES=broker,controller`, a
+  `controller.quorum.voters` entry pointing at itself, `KAFKA_NODE_ID`,
+  listeners for broker (9092) and controller (9093), and a formatted storage
+  dir (`kafka-storage format` with a cluster UUID) via an init step.
+- Capacity note: the cluster is CPU-tight (~940m/node, mostly system pods). A
+  single KRaft broker still wants a few hundred Mi + some CPU — check
+  `kubectl top nodes` first; it may push the medium-pool to its 3rd
+  (autoscaled) node. Set modest requests and a JVM heap cap
+  (`KAFKA_HEAP_OPTS=-Xmx512m -Xms512m` or lower).
+- Topic(s): a single `todo-events` topic (or per-type topics) with a small
+  partition count (1–3 for learning). Created via an init Job or auto-create.
+
+### Producer
+
+The **currently-deployed backend** publishes events after each successful DB
+mutation. Since the live backend is Go, use a Go client
+(`segmentio/kafka-go` or `franz-go`); if running the Spring backend, use
+`spring-kafka`. Publishing is **non-blocking / fire-and-forget** — a failed
+publish is logged, never fails the HTTP request. (Implementing it in both
+backends is an optional extension of the Go-vs-Spring comparison.)
+
+Event shape (example): `{ "type": "TodoCreated", "id": "...", "title": "...",
+"completed": false, "timestamp": "..." }` for types `TodoCreated`,
+`TodoUpdated`, `TodoCompleted`, `TodoDeleted`.
+
+### The four use cases (detailed)
+
+#### Use case 1 — Activity log (start here)
+
+The foundational case; exercises produce → topic → consume → consumer group.
+
+- **Producer:** backend publishes an event on every create/update/complete/
+  delete.
+- **Consumer:** a **separate Deployment** (its own image + CI/CD pipeline — good
+  microservice practice) in consumer group `activity-logger`, reads
+  `todo-events` and appends rows to a new `activity_log` table
+  (`id, todo_id, type, detail, created_at`).
+- **API/UI:** new `GET /api/activity` (paginated, read-only) on the backend
+  reading `activity_log`; a new read-only "Activity" view in the Angular app.
+- **Teaches:** producer, topic, consumer, consumer groups, offsets,
+  serialization. Zero risk to CRUD.
+- **Verify:** create/complete/delete a todo → rows appear in `activity_log` and
+  in the Activity view.
+
+#### Use case 2 — Notifications / fan-out
+
+Shows Kafka's real strength: multiple **independent** consumer groups reading
+the **same** events without interfering.
+
+- **Consumer:** a second consumer group `notifier` on the same `todo-events`
+  topic. On `TodoCreated` (or a future `TodoDueSoon`) it produces a
+  notification — for learning, write to a `notifications` table (or just log).
+- **API/UI:** optional `GET /api/notifications` + a bell/badge in the frontend
+  that polls it.
+- **Teaches:** consumer-group fan-out (activity-logger and notifier both consume
+  every event, each at its own offset), and that adding consumers doesn't touch
+  the producer.
+- **Key demo:** stop the notifier, create todos, restart it — it catches up from
+  its committed offset (durability/replay).
+
+#### Use case 3 — Metrics / stream aggregation
+
+A streaming-aggregation mindset: derive a materialized view from the event
+stream.
+
+- **Consumer:** consumer group `stats-aggregator` maintains rolling aggregates
+  (todos created per day, completion rate, active count) in a `todo_stats`
+  table, updated as events arrive.
+- **API/UI:** `GET /api/stats` + a small dashboard view (counts/rates; charts
+  optional).
+- **Teaches:** building a read-optimized projection from events (CQRS-lite),
+  idempotent updates, handling out-of-order/duplicate events.
+- **Note:** make updates idempotent (e.g. keyed upserts) so replays don't
+  double-count.
+
+#### Use case 4 — Real-time UI updates (most advanced)
+
+Close the loop to a live-updating frontend.
+
+- **Consumer/bridge:** a consumer group `realtime-bridge` reads `todo-events`
+  and pushes them to connected browsers via **WebSocket or SSE** (a new
+  endpoint, e.g. `GET /api/stream`).
+- **Frontend:** subscribes to the stream and updates the todo list live when
+  any client changes data (no manual refresh).
+- **Teaches:** the full event-driven loop end to end (DB change → Kafka →
+  consumer → push → UI), plus WebSocket/SSE handling and connection lifecycle.
+- **Effort:** highest — adds streaming transport on both backend and frontend.
+- **Caveat:** with multiple backend/bridge replicas, a client only receives
+  events from the replica it's connected to unless the bridge consumes all
+  partitions; for single-replica learning this is fine.
+
+### Suggested build order
+
+1. Deploy KRaft Kafka (single broker) via Helm templates; verify with a console
+   producer/consumer (`kafka-console-producer`/`-consumer` in an ephemeral pod).
+2. Add the producer to the backend (fire-and-forget) + the `todo-events` topic.
+3. Use case 1 (activity log): consumer Deployment + `activity_log` +
+   `GET /api/activity` + Activity view.
+4. Use case 2 (fan-out): add the `notifier` consumer group; demonstrate replay.
+5. Use case 3 (stats): `stats-aggregator` + `GET /api/stats` + dashboard.
+6. Use case 4 (real-time): SSE/WebSocket bridge + live frontend updates.
+
+### How it fits the existing setup (nothing breaks)
+
+- **Infra:** Kafka is a new StatefulSet+Service+PVC (same pattern as Postgres),
+  templated in the Helm chart behind a `kafka.enabled` flag (like
+  `monitoring.enabled`), so the chart still works without it.
+- **Consumers:** separate Deployments, each with its own image + CI/CD pipeline
+  (more microservice practice) — or, to keep it light, goroutines/threads in the
+  backend (simpler, less realistic).
+- **Frontend:** only new read-only views/streams are added; existing views
+  unchanged.
+- **CI/CD, Helm, monitoring:** extend naturally (new chart templates, new
+  pipelines, Kafka/consumer metrics via the existing GMP if exposed).
+
+### Tradeoffs / gotchas
+
+- **Resources:** even a single KRaft broker is not free on a tight cluster —
+  measure and cap the JVM heap; expect possible use of the autoscaled 3rd node.
+- **Delivery guarantees:** fire-and-forget can drop an event if the broker is
+  unreachable. Acceptable for learning. The **transactional outbox** pattern
+  (write event to a DB table in the same transaction, relay to Kafka) is the
+  "never lose an event" upgrade — a good later lesson, not the first step.
+- **Idempotency:** consumers should tolerate duplicates/replays (Kafka is
+  at-least-once by default) — use upserts/keys, especially for use case 3.
+- **Schema:** start with JSON for simplicity; a schema registry + Avro/Protobuf
+  is a later refinement.
+
+---
+
 
 ## 15. Capacity plan (current state)
 
