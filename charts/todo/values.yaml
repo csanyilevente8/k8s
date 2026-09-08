@@ -5,14 +5,13 @@ image:
 
 backend:
   image:
-    # Default backend is the Go implementation (go-backend-project). The Spring
-    # backend image ("backend") remains available for A/B swaps via --set.
-    # NOTE: the Spring backend-project CD still runs on its own pushes; if it
-    # triggers it will set backend.image.tag to a Spring SHA while reusing this
-    # go-backend repository, producing a non-existent image. Avoid pushing to
-    # the Spring repo while Go is the default.
+    # Default backend is the Go implementation (go-backend-project); its CD owns
+    # the `helm upgrade` for this release and pins both repository and tag. The
+    # Spring backend image ("backend") remains available for A/B swaps via --set.
+    # The Spring backend-project CD only builds+pushes its image and does NOT
+    # deploy, so it can no longer stamp a Spring SHA onto the go-backend image.
     repository: go-backend
-    tag: "676bc17"          # overridden per-deploy by the go-backend-project CD
+    tag: "02664c6"          # overridden per-deploy by the go-backend-project CD
   replicas: 1
   # Right-sized for the Go backend (idle ~1-3Mi). The Spring image needs far
   # more (~283Mi); if swapping back to Spring, raise these via --set.
@@ -34,7 +33,7 @@ backend:
 frontend:
   image:
     repository: frontend
-    tag: "d81391d"          # overridden per-deploy by CD
+    tag: "7e53ebd"          # overridden per-deploy by CD
   replicas: 1
   resources:
     requests:
