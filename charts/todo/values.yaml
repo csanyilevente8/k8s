@@ -12,7 +12,7 @@ backend:
     # go-backend repository, producing a non-existent image. Avoid pushing to
     # the Spring repo while Go is the default.
     repository: go-backend
-    tag: "a0ba0de"          # overridden per-deploy by the go-backend-project CD
+    tag: "676bc17"          # overridden per-deploy by the go-backend-project CD
   replicas: 1
   # Right-sized for the Go backend (idle ~1-3Mi). The Spring image needs far
   # more (~283Mi); if swapping back to Spring, raise these via --set.
@@ -34,7 +34,7 @@ backend:
 frontend:
   image:
     repository: frontend
-    tag: "a3149ff"          # overridden per-deploy by CD
+    tag: "d81391d"          # overridden per-deploy by CD
   replicas: 1
   resources:
     requests:
